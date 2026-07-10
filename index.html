@@ -17,6 +17,7 @@
         .header { text-align: center; margin-bottom: 1.5rem; margin-top: 1rem; }
         .header .icon { font-size: 2.5rem; margin-bottom: 0.5rem; }
         .header h1 { font-size: 1.8rem; font-weight: bold; color: #111827; margin-bottom: 0.25rem; }
+        .version-link { font-size: 0.75rem; color: #1e40af; text-decoration: none; margin-left: 0.5rem; font-weight: 500; }
         .header p { color: #6b7280; font-size: 0.95rem; }
         .status { color: #1e40af; font-size: 0.9rem; margin-top: 0.5rem; font-weight: 500; min-height: 1.2rem; }
         
@@ -83,7 +84,7 @@
     <div class="container">
         <div class="header">
             <div class="icon" id="icon">🎹</div>
-            <h1>Music Analyzer v2</h1>
+            <h1>Music Analyzer v3 <a href="#" class="version-link">View Versions</a></h1>
             <p>Real Pitch Detection</p>
             <div class="status" id="status">Click "Request Permission" to start</div>
         </div>
@@ -361,20 +362,18 @@
                     }
                     rms = Math.sqrt(rms / inputData.length);
 
-                    // Filter 1: Only process if volume is strong enough (filters weak noise/whispers)
-                    if (rms > 0.05) {
+                    // Filter 1: Volume threshold - detect clear piano sounds
+                    if (rms > 0.03) {
                         const frequency = detectPitch(inputData, audioContext.sampleRate);
                         const note = getClosestNote(frequency);
 
-                        // Filter 2: Check if frequency is within instrument range
-                        // Piano: 27.5 Hz (A0) to 4186 Hz (C8) - we focus on 250-2000 Hz for accuracy
-                        // Filter out speech frequencies (typically 80-300 Hz for males, 165-255 Hz for females)
-                        const isPianoFrequency = frequency > 250 && frequency < 2000;
+                        // Filter 2: Piano frequency range (C2=65Hz to C8=4186Hz, but focus on playable range)
+                        const isPianoFrequency = frequency > 60 && frequency < 4200;
                         
-                        // Filter 3: Check harmonic content - piano has clear harmonics, speech has noise
+                        // Filter 3: Simple harmonic check - less strict
                         const harmonicStability = checkHarmonicStability(inputData, frequency);
 
-                        if (note && Date.now() - lastNoteTime > 300 && isPianoFrequency && harmonicStability > 0.6) {
+                        if (note && Date.now() - lastNoteTime > 300 && isPianoFrequency && harmonicStability > 0.4) {
                             lastNoteTime = Date.now();
 
                             const instrument = document.getElementById('instrument').value;
