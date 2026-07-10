@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Music Practice Analyzer</title>
+    <title>Music Practice Analyzer v1</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body { width: 100%; height: 100%; }
@@ -83,7 +83,7 @@
     <div class="container">
         <div class="header">
             <div class="icon" id="icon">🎹</div>
-            <h1>Music Analyzer</h1>
+            <h1>Music Analyzer v2</h1>
             <p>Real Pitch Detection</p>
             <div class="status" id="status">Click "Request Permission" to start</div>
         </div>
@@ -265,6 +265,34 @@
             return -1;
         }
 
+        function checkHarmonicStability(buffer, frequency) {
+            // Piano has strong harmonic content and stable pitch
+            // Speech has noise-like characteristics and frequency changes
+            
+            if (frequency < 0) return 0;
+
+            // Analyze frequency spectrum
+            let fundamentalPower = 0;
+            let totalPower = 0;
+
+            for (let i = 0; i < buffer.length; i++) {
+                totalPower += buffer[i] * buffer[i];
+            }
+
+            // Simple harmonic detection: look for periodic patterns
+            const period = Math.floor(44100 / (frequency || 1));
+            if (period > buffer.length / 2) return 0;
+
+            for (let i = 0; i < buffer.length - period; i++) {
+                const diff = Math.abs(buffer[i] - buffer[i + period]);
+                fundamentalPower += diff;
+            }
+
+            // Normalize: lower difference = more harmonic = more piano-like
+            const harmonic = 1 - (fundamentalPower / (totalPower * 2));
+            return Math.max(0, harmonic);
+        }
+
         async function requestPermission() {
             try {
                 setStatus('🎤 Requesting microphone...');
@@ -333,11 +361,20 @@
                     }
                     rms = Math.sqrt(rms / inputData.length);
 
-                    if (rms > 0.02) {
+                    // Filter 1: Only process if volume is strong enough (filters weak noise/whispers)
+                    if (rms > 0.05) {
                         const frequency = detectPitch(inputData, audioContext.sampleRate);
                         const note = getClosestNote(frequency);
 
-                        if (note && Date.now() - lastNoteTime > 300) {
+                        // Filter 2: Check if frequency is within instrument range
+                        // Piano: 27.5 Hz (A0) to 4186 Hz (C8) - we focus on 250-2000 Hz for accuracy
+                        // Filter out speech frequencies (typically 80-300 Hz for males, 165-255 Hz for females)
+                        const isPianoFrequency = frequency > 250 && frequency < 2000;
+                        
+                        // Filter 3: Check harmonic content - piano has clear harmonics, speech has noise
+                        const harmonicStability = checkHarmonicStability(inputData, frequency);
+
+                        if (note && Date.now() - lastNoteTime > 300 && isPianoFrequency && harmonicStability > 0.6) {
                             lastNoteTime = Date.now();
 
                             const instrument = document.getElementById('instrument').value;
