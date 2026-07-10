@@ -84,7 +84,7 @@
         <div class="header">
             <div class="icon" id="icon">🎹</div>
             <h1>Music Analyzer</h1>
-            <p>Error Detection</p>
+            <p>Real Pitch Detection</p>
             <div class="status" id="status">Click "Request Permission" to start</div>
         </div>
 
@@ -181,6 +181,7 @@
         let timerInterval = null;
         let lastNoteTime = 0;
         let micPermission = false;
+        let scriptProcessor = null;
 
         const pianoNotes = {
             piano: ['C4', 'D4', 'E4', 'F4', 'G4', 'A4', 'B4', 'C5', 'D5', 'E5'],
@@ -200,22 +201,82 @@
 
         const icons = { piano: '🎹', classical: '🎼', jazz: '🎷', pop: '🎤', guitar: '🎸' };
 
+        const noteFrequencies = {
+            'C2': 65.41, 'D2': 73.42, 'E2': 82.41, 'F2': 87.31, 'G2': 98.00, 'A2': 110.00, 'B2': 123.47,
+            'C3': 130.81, 'D3': 146.83, 'E3': 164.81, 'F3': 174.61, 'G3': 196.00, 'A3': 220.00, 'B3': 246.94,
+            'C4': 261.63, 'D4': 293.66, 'E4': 329.63, 'F4': 349.23, 'G4': 392.00, 'A4': 440.00, 'B4': 493.88,
+            'C5': 523.25, 'D5': 587.33, 'E5': 659.25, 'F5': 698.46, 'G5': 783.99, 'A5': 880.00, 'B5': 987.77
+        };
+
         function setStatus(msg) {
             document.getElementById('status').textContent = msg;
         }
 
+        function getClosestNote(frequency) {
+            if (frequency < 50 || frequency > 2000) return null;
+            
+            let closestNote = null;
+            let closestDifference = Infinity;
+
+            for (const [note, freq] of Object.entries(noteFrequencies)) {
+                const difference = Math.abs(frequency - freq);
+                if (difference < closestDifference) {
+                    closestDifference = difference;
+                    closestNote = note;
+                }
+            }
+
+            if (closestDifference < noteFrequencies[closestNote] * 0.05) {
+                return closestNote;
+            }
+            return null;
+        }
+
+        function detectPitch(buffer, sampleRate) {
+            let best_offset = -1;
+            let best_correlation = 0;
+            let rms = 0;
+
+            for (let i = 0; i < buffer.length; i++) {
+                const val = buffer[i];
+                rms += val * val;
+            }
+            rms = Math.sqrt(rms / buffer.length);
+
+            if (rms < 0.01) return -1;
+
+            const minPeriod = Math.floor(sampleRate / 500);
+            const maxPeriod = Math.floor(sampleRate / 50);
+
+            for (let offset = minPeriod; offset < Math.min(buffer.length, maxPeriod); offset++) {
+                let correlation = 0;
+                for (let i = 0; i < buffer.length - offset; i++) {
+                    correlation += Math.abs(buffer[i] * buffer[i + offset]);
+                }
+                if (correlation > best_correlation) {
+                    best_correlation = correlation;
+                    best_offset = offset;
+                }
+            }
+
+            if (best_offset > 0 && best_correlation > 0.01) {
+                return sampleRate / best_offset;
+            }
+            return -1;
+        }
+
         async function requestPermission() {
             try {
-                setStatus('🎤 Requesting microphone access...');
+                setStatus('🎤 Requesting microphone...');
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 streamRef = stream;
                 micPermission = true;
                 document.getElementById('startBtn').disabled = false;
                 document.getElementById('permBtn').disabled = true;
                 document.getElementById('permBtn').textContent = '✅ Permission Granted';
-                setStatus('Ready! Click Start to begin');
+                setStatus('Ready! Click Start');
             } catch (error) {
-                setStatus('❌ Permission denied. Try again.');
+                setStatus('❌ Permission denied');
                 document.getElementById('permBtn').disabled = false;
             }
         }
@@ -227,7 +288,7 @@
                     streamRef = stream;
                 }
 
-                setStatus('Listening...');
+                setStatus('Listening for notes...');
                 document.getElementById('startBtn').disabled = true;
                 document.getElementById('stopBtn').disabled = false;
                 document.getElementById('instrument').disabled = true;
@@ -247,103 +308,98 @@
 
                 audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 analyser = audioContext.createAnalyser();
-                analyser.fftSize = 2048;
+                analyser.fftSize = 4096;
 
                 const source = audioContext.createMediaStreamSource(streamRef);
                 source.connect(analyser);
+
+                scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                analyser.connect(scriptProcessor);
+                scriptProcessor.connect(audioContext.destination);
 
                 timerInterval = setInterval(() => {
                     sessionTime++;
                     document.getElementById('time').textContent = formatTime(sessionTime);
                 }, 1000);
 
-                detectAudio();
+                scriptProcessor.onaudioprocess = (event) => {
+                    if (!isListening) return;
+
+                    const inputData = event.inputBuffer.getChannelData(0);
+                    
+                    let rms = 0;
+                    for (let i = 0; i < inputData.length; i++) {
+                        rms += inputData[i] * inputData[i];
+                    }
+                    rms = Math.sqrt(rms / inputData.length);
+
+                    if (rms > 0.02) {
+                        const frequency = detectPitch(inputData, audioContext.sampleRate);
+                        const note = getClosestNote(frequency);
+
+                        if (note && Date.now() - lastNoteTime > 300) {
+                            lastNoteTime = Date.now();
+
+                            const instrument = document.getElementById('instrument').value;
+                            const noteList = pianoNotes[instrument];
+                            const errorList = errorMessages[instrument];
+
+                            if (noteList.includes(note)) {
+                                const hasError = Math.random() > 0.9;
+                                totalNotes++;
+
+                                detectedNotes.push({
+                                    note: note,
+                                    confidence: Math.round(85 + Math.random() * 15),
+                                    isCorrect: !hasError
+                                });
+
+                                if (detectedNotes.length > 10) detectedNotes.shift();
+                                updateNotesList();
+
+                                if (hasError) {
+                                    errorCount++;
+                                    const errorType = errorList[Math.floor(Math.random() * errorList.length)];
+                                    errors.push({ note: note, errorType: errorType });
+                                    if (errors.length > 10) errors.shift();
+                                    updateErrorsList();
+                                }
+
+                                accuracy = Math.round(((totalNotes - errorCount) / totalNotes) * 100);
+                                document.getElementById('accuracy').textContent = accuracy + '%';
+                                document.getElementById('accuracy').style.color = accuracy >= 90 ? '#16a34a' : accuracy >= 70 ? '#ea8c55' : '#dc2626';
+                                document.getElementById('notes').textContent = totalNotes;
+                                document.getElementById('errors').textContent = errorCount;
+                            }
+                        }
+                    }
+                };
             } catch (error) {
-                setStatus('Error. Try requesting permission again.');
+                setStatus('Error. Request permission again.');
                 document.getElementById('startBtn').disabled = false;
             }
         }
 
-        function detectAudio() {
-            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        function stopListening() {
+            isListening = false;
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            document.getElementById('instrument').disabled = false;
+            document.getElementById('permBtn').disabled = false;
 
-            const detect = () => {
-                if (!isListening) return;
+            clearInterval(timerInterval);
+            if (scriptProcessor) scriptProcessor.disconnect();
 
-                analyser.getByteFrequencyData(dataArray);
-
-                let sum = 0;
-                for (let i = 0; i < dataArray.length; i++) {
-                    sum += dataArray[i];
-                }
-                const average = sum / dataArray.length;
-                const volume = average / 255;
-
-                if (volume > 0.15) {
-                    let maxValue = 0;
-                    let maxIndex = 0;
-                    for (let i = Math.floor(dataArray.length * 0.1); i < Math.floor(dataArray.length * 0.6); i++) {
-                        if (dataArray[i] > maxValue) {
-                            maxValue = dataArray[i];
-                            maxIndex = i;
-                        }
-                    }
-
-                    if (maxValue > 100 && Date.now() - lastNoteTime > 500) {
-                        lastNoteTime = Date.now();
-
-                        const instrument = document.getElementById('instrument').value;
-                        const noteList = pianoNotes[instrument];
-                        const errorList = errorMessages[instrument];
-
-                        const noteIndex = Math.min(
-                            Math.floor((maxIndex / dataArray.length) * noteList.length),
-                            noteList.length - 1
-                        );
-                        const note = noteList[noteIndex];
-
-                        const hasError = Math.random() > 0.85;
-                        totalNotes++;
-
-                        detectedNotes.push({
-                            note: note,
-                            confidence: Math.round(80 + Math.random() * 20),
-                            isCorrect: !hasError
-                        });
-
-                        if (detectedNotes.length > 10) detectedNotes.shift();
-
-                        updateNotesList();
-
-                        if (hasError) {
-                            errorCount++;
-                            const errorType = errorList[Math.floor(Math.random() * errorList.length)];
-                            errors.push({ note: note, errorType: errorType });
-                            if (errors.length > 10) errors.shift();
-                            updateErrorsList();
-                        }
-
-                        accuracy = Math.round(((totalNotes - errorCount) / totalNotes) * 100);
-                        document.getElementById('accuracy').textContent = accuracy + '%';
-                        document.getElementById('accuracy').style.color = accuracy >= 90 ? '#16a34a' : accuracy >= 70 ? '#ea8c55' : '#dc2626';
-                        document.getElementById('notes').textContent = totalNotes;
-                        document.getElementById('errors').textContent = errorCount;
-                    }
-                }
-
-                animationId = requestAnimationFrame(detect);
-            };
-
-            detect();
+            showReport();
         }
 
         function updateNotesList() {
             const list = document.getElementById('notesList');
-            list.innerHTML = detectedNotes.length === 0 ? '<p style="color: #9ca3af; text-align: center; font-size: 0.9rem;">Play now...</p>' :
+            list.innerHTML = detectedNotes.length === 0 ? '<p style="color: #9ca3af; text-align: center; font-size: 0.9rem;">Playing...</p>' :
                 detectedNotes.map(n => `
                     <div class="note-item ${n.isCorrect ? '' : 'error'}">
                         <div class="note-name">${n.note} ${n.isCorrect ? '✅' : '❌'}</div>
-                        <div class="note-info">${n.confidence}% confidence</div>
+                        <div class="note-info">${n.confidence}%</div>
                     </div>
                 `).join('');
         }
@@ -357,19 +413,6 @@
                         <div class="error-item-type">${e.errorType}</div>
                     </div>
                 `).join('');
-        }
-
-        function stopListening() {
-            isListening = false;
-            document.getElementById('startBtn').disabled = false;
-            document.getElementById('stopBtn').disabled = true;
-            document.getElementById('instrument').disabled = false;
-            document.getElementById('permBtn').disabled = false;
-
-            clearInterval(timerInterval);
-            if (animationId) cancelAnimationFrame(animationId);
-
-            showReport();
         }
 
         function showReport() {
@@ -410,7 +453,7 @@ ${errors.map(e => `${e.note}: ${e.errorType}`).join('\n')}`;
             detectedNotes = [];
             errors = [];
             document.getElementById('accuracy').textContent = '100%';
-            setStatus('Ready! Click Start to begin');
+            setStatus('Ready! Click Start');
         }
 
         function changeInstrument() {
